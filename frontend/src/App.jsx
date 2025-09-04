@@ -1,73 +1,166 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import PromptInput from './components/PromptInput';
 import ChatHistory from './components/ChatHistory';
-import DivergenceMeter from './components/DivergenceMeter';
-import WorldlineSelector from './components/WorldlineSelector'; // We summon the new selector!
+import ProjectManager from './components/ProjectManager';
 
 function App() {
-  const [divergence, setDivergence] = useState('1.048596');
-  const [messages, setMessages] = useState([
-    { sender: 'oracle', text: 'The Oracle Interface is Online. Awaiting Commands.' }
-  ]);
-  // The new memory for holding the three choices in superposition!
-  const [pendingWorldlines, setPendingWorldlines] = useState([]);
+  // ... (all state and logic functions remain the same)
+  const [messages, setMessages] = useState([]);
+  const [undoneMessages, setUndoneMessages] = useState([]);
+  const [tokensPerSecond, setTokensPerSecond] = useState(0);
+  const [savedProjects, setSavedProjects] = useState([]);
+  const [currentProjectId, setCurrentProjectId] = useState(null);
+  const chatHistoryRef = useRef(null);
+
+  useEffect(() => {
+    const loadedProjects = JSON.parse(localStorage.getItem('dockracle_projects')) || [];
+    setSavedProjects(loadedProjects);
+    if (loadedProjects.length > 0) {
+      handleLoadProject(loadedProjects[0].id);
+    } else {
+      handleNewProject();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (chatHistoryRef.current) {
+      const { scrollHeight, clientHeight } = chatHistoryRef.current;
+      chatHistoryRef.current.scrollTop = scrollHeight - clientHeight;
+    }
+  }, [messages]);
+
+  const handleSaveProject = () => {
+    const projectName = prompt("Enter a name for this project:", `Project ${Date.now()}`);
+    if (!projectName) return;
+    const newProject = { id: currentProjectId || Date.now(), name: projectName, messages: messages };
+    const updatedProjects = savedProjects.filter(p => p.id !== newProject.id);
+    updatedProjects.unshift(newProject);
+    setSavedProjects(updatedProjects);
+    localStorage.setItem('dockracle_projects', JSON.stringify(updatedProjects));
+    alert(`Project "${projectName}" saved!`);
+  };
+
+  const handleLoadProject = (projectId) => {
+    const projectToLoad = savedProjects.find(p => p.id === projectId);
+    if (projectToLoad) {
+      setMessages(projectToLoad.messages);
+      setCurrentProjectId(projectToLoad.id);
+      setUndoneMessages([]);
+    }
+  };
+
+  const handleNewProject = () => {
+    setMessages([{ sender: 'oracle', text: 'New Project Initialized. Awaiting Commands.' }]);
+    setCurrentProjectId(null);
+    setUndoneMessages([]);
+  };
+
+  const handleUndo = () => {
+    if (messages.length > 1) {
+      const lastMessage = messages[messages.length - 1];
+      const secondLastMessage = messages[messages.length - 2];
+      if (lastMessage.sender === 'oracle' && secondLastMessage.sender === 'user') {
+        setUndoneMessages([secondLastMessage, lastMessage]);
+        setMessages(prev => prev.slice(0, -2));
+      }
+    }
+  };
+
+  const handleRedo = () => {
+    if (undoneMessages.length > 0) {
+      setMessages(prev => [...prev, ...undoneMessages]);
+      setUndoneMessages([]);
+    }
+  };
 
   const handleSendMessage = async (promptText) => {
+    setUndoneMessages([]);
     const newUserMessage = { sender: 'user', text: promptText };
-    // We add the user's message and a "thinking" message
-    setMessages(prev => [...prev, newUserMessage, { sender: 'oracle', text: 'Observing divergent possibilities...' }]);
+    setMessages(prev => [...prev, newUserMessage, { sender: 'oracle', text: '' }]);
+
+    let model = 'llama3.2:3b';
+    let prompt = promptText;
+
+    if (promptText.startsWith('@')) {
+      const parts = promptText.split(' ');
+      const modelMention = parts.shift();
+      model = modelMention.substring(1);
+      prompt = parts.join(' ');
+    }
 
     try {
       const response = await fetch('http://localhost:5100/summon', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'llama3.2:3b', prompt: promptText }),
+        body: JSON.stringify({ model: model, prompt: prompt }),
       });
 
-      if (!response.ok) throw new Error('The titan did not respond correctly.');
+      if (!response.body) return;
 
-      const data = await response.json();
-      // Instead of picking one, we place all three in our pending state!
-      setPendingWorldlines(data.worldlines);
-      // We remove the "thinking..." message
-      setMessages(prev => prev.slice(0, -1));
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
+      const processStream = async () => {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let boundary = buffer.indexOf('\n\n');
+          while (boundary !== -1) {
+            const chunk = buffer.substring(0, boundary);
+            buffer = buffer.substring(boundary + 2);
+            if (chunk.startsWith('data:')) {
+              const jsonString = chunk.substring(5);
+              if (jsonString.trim()) {
+                const data = JSON.parse(jsonString);
+                if (data.done) {
+                  reader.cancel();
+                  return;
+                }
+                if (data.token) {
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    newMessages[newMessages.length - 1].text += data.token;
+                    return newMessages;
+                  });
+                }
+              }
+            }
+            boundary = buffer.indexOf('\n\n');
+          }
+        }
+      };
+      await processStream();
     } catch (error) {
       console.error("Error summoning the titan:", error);
-      const errorResponse = { sender: 'oracle', text: 'Error: Could not summon the titan. Is the forge running?' };
-      setMessages(prev => [...prev.slice(0, -1), errorResponse]);
+      setMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[newMessages.length - 1].text = 'Error: Could not connect to the forge.';
+        return newMessages;
+      });
     }
   };
 
-  // This function collapses the waveform when a choice is made!
-  const handleSelectWorldline = (worldline) => {
-    const titanResponse = { sender: 'oracle', text: worldline.text };
-    setMessages(prev => [...prev, titanResponse]);
-    setDivergence(worldline.divergence);
-    setPendingWorldlines([]); // Clear the choices, returning to the normal prompt
-  };
-
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      height: '100vh',
-      backgroundColor: '#282c34',
-      color: 'white',
-      fontFamily: 'monospace',
-      padding: '20px',
-      boxSizing: 'border-box'
-    }}>
-      <DivergenceMeter divergenceNumber={divergence} />
-      <ChatHistory messages={messages} />
-      {/* We now conditionally render either the selector or the prompt! */}
-      {pendingWorldlines.length > 0 ? (
-        <WorldlineSelector worldlines={pendingWorldlines} onSelect={handleSelectWorldline} />
-      ) : (
-        <PromptInput onSendMessage={handleSendMessage} />
-      )}
+    <div className="app-container">
+      <ProjectManager 
+        onSave={handleSaveProject} 
+        onNewProject={handleNewProject}
+        savedProjects={savedProjects}
+        onLoadProject={handleLoadProject}
+      />
+      {/* The Chronometer can be added back here if desired */}
+      <ChatHistory messages={messages} ref={chatHistoryRef} />
+      <PromptInput onSendMessage={handleSendMessage} />
+      <div className="button-group">
+        <button className="button" onClick={handleUndo}>
+          Undo
+        </button>
+        <button className="button" onClick={handleRedo} disabled={undoneMessages.length === 0}>
+          Redo
+        </button>
+      </div>
     </div>
   );
 }

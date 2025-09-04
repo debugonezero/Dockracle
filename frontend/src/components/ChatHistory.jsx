@@ -1,17 +1,9 @@
-import React from 'react';
+import React, { forwardRef } from 'react';
+import ReactMarkdown from 'react-markdown'; // We summon the new scribe!
 
-function ChatHistory({ messages }) {
+const ChatHistory = forwardRef(({ messages }, ref) => {
   return (
-    <div style={{
-      width: '80%',
-      maxWidth: '800px',
-      flexGrow: 1, // This makes the history fill the available space
-      overflowY: 'auto', // Adds a scrollbar if the content overflows
-      padding: '20px',
-      border: '1px solid #61dafb',
-      borderRadius: '5px',
-      marginBottom: '20px'
-    }}>
+    <div ref={ref} className="chat-history">
       {messages.map((msg, index) => (
         <div key={index} style={{
           marginBottom: '15px',
@@ -21,16 +13,22 @@ function ChatHistory({ messages }) {
             display: 'inline-block',
             padding: '10px 15px',
             borderRadius: '10px',
-            backgroundColor: msg.sender === 'user' ? '#61dafb' : '#404452',
-            color: msg.sender === 'user' ? '#282c34' : 'white',
-            maxWidth: '80%'
+            backgroundColor: msg.sender === 'user' ? 'var(--message-user-bg)' : 'var(--message-oracle-bg)',
+            color: msg.sender === 'user' ? 'var(--message-user-text)' : 'var(--message-oracle-text)',
+            maxWidth: '80%',
+            textAlign: 'left',
           }}>
-            {msg.text}
+            {/* We now use the magnificent ReactMarkdown component for the oracle's messages! */}
+            {msg.sender === 'oracle' ? (
+              <ReactMarkdown>{msg.text}</ReactMarkdown>
+            ) : (
+              msg.text
+            )}
           </div>
         </div>
       ))}
     </div>
   );
-}
+});
 
 export default ChatHistory;
